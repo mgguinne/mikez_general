@@ -73,20 +73,18 @@ if [[ "$mode" == "--live" ]]; then
 elif [[ "$mode" == "--one" ]]; then
   name="${2:-}"
   [[ -n "$name" ]] || { echo "Usage: $0 --one <shortcut-name>" >&2; exit 1; }
-  mapfile -t bs < <(newest_backups)
-  (( ${#bs[@]} >= 2 )) || { echo "Need at least two backups." >&2; exit 1; }
-  LEFT_DIR="${bs[1]}"
-  RIGHT_DIR="${bs[0]}"
+  RIGHT_DIR="$(newest_backups | sed -n '1p')"
+  LEFT_DIR="$(newest_backups | sed -n '2p')"
+  [[ -n "$LEFT_DIR" ]] || { echo "Need at least two backups." >&2; exit 1; }
   ONE_NAME="$name"
 else
   if [[ -n "$mode" ]]; then
     LEFT_DIR="$mode"
     RIGHT_DIR="${2:?Usage: $0 <backup-a> <backup-b>}"
   else
-    mapfile -t bs < <(newest_backups)
-    (( ${#bs[@]} >= 2 )) || { echo "Need at least two backups in ./backups." >&2; exit 1; }
-    LEFT_DIR="${bs[1]}"
-    RIGHT_DIR="${bs[0]}"
+    RIGHT_DIR="$(newest_backups | sed -n '1p')"
+    LEFT_DIR="$(newest_backups | sed -n '2p')"
+    [[ -n "$LEFT_DIR" ]] || { echo "Need at least two backups in ./backups." >&2; exit 1; }
     echo "Diffing: $LEFT_DIR  →  $RIGHT_DIR"
   fi
 fi
