@@ -17,11 +17,13 @@ set -euo pipefail
 DIFF_CMD="${DIFF:-diff -u}"
 
 if [[ "$(uname)" != "Darwin" ]]; then
-  echo "This script only runs on macOS (uses the aea CLI)." >&2
+  echo "This script only runs on macOS (uses plutil)." >&2
   exit 1
 fi
 
 # Unwrap/convert one shortcut file to an XML plist at $2. Returns 0 on success.
+# For AEA1 signed shortcuts, strip the 12-byte header and take auth_data as the
+# binary plist (skipping signature verification).
 to_xml() {
   local input="$1" output="$2"
   local magic
@@ -29,8 +31,17 @@ to_xml() {
   if [[ "$magic" == "AEA1" ]]; then
     local tmp
     tmp="$(mktemp)"
-    if aea decrypt -i "$input" -o "$tmp" 2>/dev/null \
-       && plutil -convert xml1 -o "$output" "$tmp" 2>/dev/null; then
+    if python3 - "$input" "$tmp" <<'PY' && plutil -convert xml1 -o "$output" "$tmp" 2>/dev/null
+import struct, sys
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+if data[:4] != b"AEA1":
+    sys.exit(2)
+size = struct.unpack("<I", data[8:12])[0]
+with open(sys.argv[2], "wb") as f:
+    f.write(data[12:12+size])
+PY
+    then
       rm -f "$tmp"
       return 0
     fi

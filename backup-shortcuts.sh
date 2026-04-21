@@ -3,14 +3,16 @@
 #
 # Copies the raw iCloud-synced Shortcut files into a timestamped folder.
 # Signed files (AEA1 magic) are stored as-is in binary/ for re-import, and
-# also unwrapped with `aea` + converted to XML plist in xml/ for diffing.
-# Unsigned plists go straight to xml/.
+# the inner binary plist is extracted and converted to XML in xml/ for
+# diffing. Unsigned plists go straight to xml/.
+#
+# The AEA "decryption" here is just a 12-byte-header strip: shortcuts are
+# profile 0 (signed, not encrypted), and the auth_data section at offset
+# 12 IS the plist. Apple's `aea decrypt` would also want the signing
+# public key to verify — we just skip verification and take the payload.
 #
 # Usage: ./backup-shortcuts.sh [destination-dir]
 #   Default destination: ./backups/shortcuts-YYYYmmdd-HHMMSS
-#
-# Requires the `aea` CLI (ships with Xcode Command Line Tools:
-#   xcode-select --install).
 
 set -euo pipefail
 
@@ -40,8 +42,20 @@ if (( ${#files[@]} == 0 )); then
   exit 1
 fi
 
-have_aea=0
-command -v aea >/dev/null 2>&1 && have_aea=1
+# Extract the binary-plist auth_data payload from a signed AEA1 file.
+# Writes the raw bplist to $2. Returns non-zero if the magic doesn't match.
+unwrap_aea() {
+  python3 - "$1" "$2" <<'PY'
+import struct, sys
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+if data[:4] != b"AEA1":
+    sys.exit(2)
+size = struct.unpack("<I", data[8:12])[0]
+with open(sys.argv[2], "wb") as f:
+    f.write(data[12:12+size])
+PY
+}
 
 count=0
 signed=0
@@ -55,18 +69,14 @@ for f in "${files[@]}"; do
   magic="$(head -c 4 "$f" 2>/dev/null || true)"
   if [[ "$magic" == "AEA1" ]]; then
     signed=$((signed + 1))
-    if (( have_aea )); then
-      # `aea decrypt` unwraps signed-only AEA (profile 1) without a key.
-      # The payload is a binary plist; normalize to XML for diffing.
-      tmp="$(mktemp)"
-      if aea decrypt -i "$f" -o "$tmp" 2>/dev/null \
-         && plutil -convert xml1 -o "$DEST/xml/$base.plist" "$tmp" 2>/dev/null; then
-        xml_written=$((xml_written + 1))
-      else
-        unwrap_failed=$((unwrap_failed + 1))
-      fi
-      rm -f "$tmp"
+    tmp="$(mktemp)"
+    if unwrap_aea "$f" "$tmp" \
+       && plutil -convert xml1 -o "$DEST/xml/$base.plist" "$tmp" 2>/dev/null; then
+      xml_written=$((xml_written + 1))
+    else
+      unwrap_failed=$((unwrap_failed + 1))
     fi
+    rm -f "$tmp"
   elif cp "$f" "$DEST/xml/$name" && plutil -convert xml1 "$DEST/xml/$name" 2>/dev/null; then
     xml_written=$((xml_written + 1))
   else
@@ -75,10 +85,8 @@ for f in "${files[@]}"; do
   count=$((count + 1))
 done
 
-# Remove the xml/ folder if nothing landed in it.
 rmdir "$DEST/xml" 2>/dev/null || true
 
-# Record the shortcut names (as shown in the Shortcuts app) alongside the backup.
 if command -v shortcuts >/dev/null 2>&1; then
   shortcuts list > "$DEST/shortcut-names.txt" 2>/dev/null || true
 fi
@@ -90,9 +98,6 @@ if (( signed > 0 )); then
 fi
 if (( xml_written > 0 )); then
   echo "  $xml_written XML plist(s) written to xml/ for diffing."
-fi
-if (( signed > 0 && have_aea == 0 )); then
-  echo "  (install Xcode Command Line Tools for XML extraction: xcode-select --install)"
 fi
 if (( unwrap_failed > 0 )); then
   echo "  $unwrap_failed signed file(s) could not be unwrapped — binary backup only." >&2
